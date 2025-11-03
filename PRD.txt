@@ -1,0 +1,779 @@
+# PRD Frontend - Application de Génération de Mémoires Techniques
+
+## 1. Vue d'ensemble
+
+### Objectif
+Créer une interface utilisateur intuitive permettant aux conducteurs de travaux de générer automatiquement des mémoires techniques personnalisés en réutilisant intelligemment le contenu d'anciens mémoires.
+
+### Stack technique
+- **Framework**: Next.js 14 (App Router)
+- **UI**: Tailwind CSS + shadcn/ui
+- **État**: React Query (TanStack Query)
+- **Formulaires**: React Hook Form + Zod
+- **Upload**: react-dropzone
+- **Preview**: react-pdf, docx-preview
+- **Diff**: react-diff-viewer-continued
+
+---
+
+## 2. Architecture Frontend
+
+### Structure des dossiers
+```
+src/
+├── app/
+│   ├── (auth)/
+│   │   ├── login/
+│   │   └── register/
+│   ├── (dashboard)/
+│   │   ├── projects/
+│   │   ├── library/
+│   │   ├── templates/
+│   │   └── settings/
+│   └── layout.tsx
+├── components/
+│   ├── ui/              # shadcn components
+│   ├── projects/
+│   ├── library/
+│   ├── editor/
+│   └── common/
+├── lib/
+│   ├── api/            # API client
+│   ├── hooks/          # Custom hooks
+│   ├── utils/
+│   └── types/
+└── styles/
+```
+
+---
+
+## 3. Pages & Fonctionnalités
+
+### 3.1 Dashboard Principal (`/dashboard`)
+
+**Composants clés:**
+- `ProjectsOverview`: Grille de projets avec filtres
+- `QuickStats`: KPIs (projets actifs, mémoires générés, taux de succès)
+- `RecentActivity`: Timeline des dernières actions
+
+**Fonctionnalités:**
+- Créer un nouveau projet (CTA proéminent)
+- Recherche/filtrage des projets (par statut, date, client)
+- Tri personnalisable
+- Vue grille/liste
+
+**États:**
+```typescript
+interface Project {
+  id: string
+  name: string
+  client?: string
+  status: 'DRAFT' | 'GENERATING' | 'READY' | 'FINAL' | 'ARCHIVED'
+  progress: number // 0-100
+  createdAt: Date
+  updatedAt: Date
+}
+```
+
+---
+
+### 3.2 Création de Projet (`/projects/new`)
+
+#### Étape 1: Informations de base
+**Composant:** `ProjectBasicInfo`
+```typescript
+interface ProjectForm {
+  name: string
+  client?: string
+  description?: string
+}
+```
+
+**Validation:**
+- Nom requis (min 3 caractères)
+- Client optionnel
+- Description optionnelle (max 500 caractères)
+
+#### Étape 2: Upload du RC
+**Composant:** `RCUploader`
+```typescript
+interface RCUpload {
+  file: File // PDF uniquement
+  status: 'idle' | 'uploading' | 'parsing' | 'done' | 'error'
+  extractedCriteria?: string[]
+}
+```
+
+**Fonctionnalités:**
+- Drag & drop ou clic pour upload
+- Validation format (PDF uniquement)
+- Limite taille (50MB)
+- Barre de progression
+- Preview du RC uploadé
+- Affichage des critères extraits (auto ou manuel)
+
+#### Étape 3: Sélection des mémoires référence
+**Composant:** `MemoireSelector`
+
+**Features:**
+- Auto-suggestion par similarité (basée sur RC)
+- Liste de tous les mémoires disponibles
+- Filtres: année, type de projet, client, montant
+- Preview de chaque mémoire au survol
+- Sélection multiple (checkboxes)
+- Badge indiquant le score de similarité
+
+```typescript
+interface Memoire {
+  id: string
+  name: string
+  client?: string
+  year?: number
+  projectType?: string
+  similarityScore?: number // 0-100
+  thumbnailUrl?: string
+}
+```
+
+#### Étape 4: Configuration des sections
+**Composant:** `SectionsConfigurator`
+
+**UI:**
+- Liste de toutes les sections possibles
+- Toggle ON/OFF pour chaque section
+- Drag & drop pour réordonner
+- Upload d'images/documents spécifiques par section
+
+```typescript
+interface SectionConfig {
+  type: BlockType
+  title: string
+  enabled: boolean
+  order: number
+  customImages?: string[]
+  customInstructions?: string
+}
+```
+
+**Sections disponibles:**
+1. ✅ Présentation entreprise
+2. ✅ Organigramme groupe
+3. ✅ Hypothèses de chiffrage
+4. ✅ Organisation du chantier
+5. ✅ Méthodologie
+6. ✅ Moyens humains
+7. ✅ Moyens matériels
+8. ✅ Planning
+9. ✅ Matériaux et équipements
+10. ✅ Dispositions environnementales
+11. ✅ Sécurité et santé
+12. ✅ Insertion sociale
+13. ✅ Références
+
+#### Étape 5: Génération
+**Composant:** `GenerationProgress`
+
+**UI:**
+- Loader animé
+- Message de progression par section
+- Estimation du temps restant
+- Option d'annulation
+- Notification à la fin
+
+**États:**
+```typescript
+interface GenerationStatus {
+  currentSection: string
+  completed: number
+  total: number
+  estimatedTimeRemaining: number // secondes
+}
+```
+
+---
+
+### 3.3 Éditeur de Mémoire (`/projects/[id]/edit`)
+
+#### Layout
+```
+┌─────────────────────────────────────────────┐
+│  Header: Nom projet | Statut | Actions     │
+├─────────────┬───────────────────────────────┤
+│             │                               │
+│  Sidebar    │      Editor Area              │
+│  (Sections) │      (Content + Chat)         │
+│             │                               │
+│  - Section1 │  ┌─────────────────────────┐  │
+│  - Section2 │  │  Preview Section        │  │
+│  - Section3 │  │  (Markdown rendered)    │  │
+│    ...      │  └─────────────────────────┘  │
+│             │                               │
+│             │  ┌─────────────────────────┐  │
+│             │  │  Chat contextuel        │  │
+│             │  │  "Rendre plus concis"   │  │
+│             │  └─────────────────────────┘  │
+│             │                               │
+└─────────────┴───────────────────────────────┘
+```
+
+#### Composants principaux
+
+**1. `SectionsSidebar`**
+- Liste cliquable des sections
+- Indicateurs de statut (✓ validé, ⚠ à revoir, 🔄 en cours)
+- Navigation rapide
+- Compte de mots par section
+
+**2. `SectionEditor`**
+```typescript
+interface Section {
+  id: string
+  type: BlockType
+  title: string
+  content: string // Markdown
+  images: string[]
+  status: SectionStatus
+  version: number
+}
+```
+
+**Features:**
+- Preview Markdown rendu
+- Boutons d'action:
+  - ✏️ Éditer (passe en mode texte)
+  - 🔄 Régénérer
+  - ✓ Valider
+  - 📋 Dupliquer
+- Affichage des images avec lightbox
+- Metadata (tokens utilisés, temps de génération)
+
+**3. `RegenerationChat`**
+- Input pour instructions
+- Exemples de prompts prédéfinis:
+  - "Rendre plus concis"
+  - "Ajouter plus de détails techniques"
+  - "Adapter au ton formel"
+  - "Mettre en avant l'aspect RSE"
+- Loading state pendant régénération
+- Preview avant/après (diff)
+
+**4. `SectionDiff`**
+- Comparaison version précédente vs nouvelle
+- Highlighting des changements
+- Boutons: Accepter / Rejeter / Éditer
+
+---
+
+### 3.4 Bibliothèque de Mémoires (`/library`)
+
+#### Vue d'ensemble
+**Composant:** `MemoiresLibrary`
+
+**Features:**
+- Grille de cartes de mémoires
+- Filtres:
+  - Type de projet
+  - Année
+  - Client
+  - Montant
+  - Statut d'indexation
+- Recherche full-text
+- Tri (date, nom, pertinence)
+
+**Actions par mémoire:**
+- 👁️ Preview
+- 📥 Télécharger
+- ✏️ Éditer métadonnées
+- 🔍 Réindexer
+- 🗑️ Supprimer
+
+#### Upload de nouveau mémoire
+**Composant:** `MemoireUploader`
+
+**Formulaire:**
+```typescript
+interface MemoireUploadForm {
+  file: File // PDF ou DOCX
+  name: string
+  client?: string
+  year?: number
+  projectType?: string
+  location?: string
+  montant?: number
+  autoIndex: boolean // Indexer automatiquement
+}
+```
+
+**Processus:**
+1. Upload du fichier
+2. Extraction métadonnées automatique (si possible)
+3. Validation/correction manuelle
+4. Indexation (avec barre de progression)
+5. Confirmation et ajout à la bibliothèque
+
+---
+
+### 3.5 Bibliothèque de Blocs (`/library/blocks`)
+
+**Composant:** `BlocksLibrary`
+
+**Vue:**
+- Grille de cartes par catégorie
+- Categories:
+  - 📊 Organigrammes
+  - 📸 Photos matériel
+  - 📄 Textes types
+  - 🎨 Éléments graphiques
+
+**Carte de bloc:**
+```typescript
+interface BlockCard {
+  id: string
+  type: BlockType
+  title: string
+  thumbnail?: string
+  preview: string // Extrait du contenu
+  tags: string[]
+  usageCount: number // Nombre d'utilisations
+}
+```
+
+**Actions:**
+- Preview complet (modal)
+- Éditer
+- Dupliquer
+- Supprimer
+- Voir les usages (dans quels projets)
+
+#### Création/Édition de bloc
+**Composant:** `BlockEditor`
+
+**Formulaire:**
+- Type de bloc (dropdown)
+- Titre
+- Contenu (Markdown editor avec preview)
+- Upload d'images
+- Tags
+- Catégorie
+
+---
+
+### 3.6 Templates (`/templates`)
+
+**Composant:** `TemplatesManager`
+
+**Features:**
+- Liste des templates Word disponibles
+- Upload de nouveaux templates
+- Preview des templates
+- Marquer un template par défaut
+- Gestion des versions
+
+```typescript
+interface DocumentTemplate {
+  id: string
+  name: string
+  type: 'MEMOIRE_COMPLET' | 'SECTION' | 'PAGE_GARDE'
+  thumbnailUrl?: string
+  version: string
+  isDefault: boolean
+  downloadUrl: string
+}
+```
+
+---
+
+### 3.7 Export Final (`/projects/[id]/export`)
+
+**Composant:** `ExportWizard`
+
+#### Options d'export
+```typescript
+interface ExportOptions {
+  format: 'docx' | 'pdf'
+  includePageNumbers: boolean
+  includeTOC: boolean // Table des matières
+  includeHeaders: boolean
+  includeFooters: boolean
+  customCoverPage?: boolean
+}
+```
+
+**UI:**
+- Formulaire avec options
+- Preview du mémoire final (rendu)
+- Bouton "Générer et télécharger"
+- Loading state
+- Lien de téléchargement direct
+- Option "Enregistrer dans Google Drive"
+
+---
+
+## 4. Composants Réutilisables
+
+### 4.1 Upload de fichiers
+**`FileUploader`**
+```typescript
+interface FileUploaderProps {
+  accept: string[] // ['pdf', 'docx']
+  maxSize: number // en MB
+  multiple?: boolean
+  onUpload: (files: File[]) => Promise<void>
+  onError: (error: string) => void
+}
+```
+
+**Features:**
+- Drag & drop zone
+- Clic pour sélectionner
+- Validation format/taille
+- Preview des fichiers
+- Barre de progression
+- Liste des fichiers uploadés avec actions (supprimer, remplacer)
+
+### 4.2 Markdown Editor
+**`MarkdownEditor`**
+```typescript
+interface MarkdownEditorProps {
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  showPreview?: boolean
+}
+```
+
+**Features:**
+- Toolbar (bold, italic, heading, list, link, image)
+- Split view (edit | preview)
+- Syntax highlighting
+- Auto-save (debounced)
+
+### 4.3 Image Gallery
+**`ImageGallery`**
+```typescript
+interface ImageGalleryProps {
+  images: Array<{
+    url: string
+    title?: string
+    caption?: string
+  }>
+  onDelete?: (url: string) => void
+  onReorder?: (newOrder: string[]) => void
+  editable?: boolean
+}
+```
+
+**Features:**
+- Lightbox au clic
+- Drag & drop pour réordonner
+- Boutons delete/edit
+- Upload de nouvelles images
+
+### 4.4 Status Badge
+**`StatusBadge`**
+```typescript
+type Status = 'DRAFT' | 'GENERATING' | 'READY' | 'FINAL' | 'ARCHIVED'
+
+interface StatusBadgeProps {
+  status: Status
+  size?: 'sm' | 'md' | 'lg'
+}
+```
+
+**Couleurs:**
+- DRAFT: gris
+- GENERATING: bleu (animé)
+- READY: jaune
+- FINAL: vert
+- ARCHIVED: gris foncé
+
+---
+
+## 5. État & Data Fetching
+
+### React Query hooks
+
+```typescript
+// Projets
+useProjects(filters?: ProjectFilters)
+useProject(id: string)
+useCreateProject()
+useUpdateProject(id: string)
+useDeleteProject(id: string)
+
+// Génération
+useGenerateMemoire(projectId: string)
+useRegenerateSection(sectionId: string)
+useGenerationStatus(projectId: string)
+
+// Mémoires référence
+useReferenceMemoires(filters?: MemoireFilters)
+useUploadMemoire()
+useIndexMemoire(id: string)
+
+// Blocs
+useContentBlocks(filters?: BlockFilters)
+useCreateBlock()
+useUpdateBlock(id: string)
+
+// Sections
+useSections(projectId: string)
+useSection(id: string)
+useValidateSection(id: string)
+
+// Export
+useExportMemoire(projectId: string, options: ExportOptions)
+```
+
+---
+
+## 6. Gestion d'état local
+
+### Context pour l'éditeur
+```typescript
+interface EditorContext {
+  currentSection: string | null
+  setCurrentSection: (id: string) => void
+  isDirty: boolean
+  setDirty: (dirty: boolean) => void
+  autoSave: boolean
+  toggleAutoSave: () => void
+}
+```
+
+---
+
+## 7. Responsive Design
+
+### Breakpoints
+- Mobile: < 640px
+- Tablet: 640px - 1024px
+- Desktop: > 1024px
+
+### Adaptations mobile
+- **Dashboard**: Vue liste uniquement
+- **Éditeur**: Sidebar collapse en drawer
+- **Upload**: Bouton classique (pas de drag & drop)
+- **Preview**: Mode plein écran
+
+---
+
+## 8. Accessibilité (a11y)
+
+### Standards
+- Contraste WCAG AA minimum
+- Navigation au clavier complète
+- Aria labels sur tous les éléments interactifs
+- Skip links
+- Focus visible
+- Alternatives textuelles pour images
+
+### Tests
+- Lighthouse audit (score > 90)
+- axe DevTools
+- Tests manuels avec lecteur d'écran (NVDA/VoiceOver)
+
+---
+
+## 9. Performance
+
+### Optimisations
+- **Images**: Next/Image avec lazy loading
+- **Code splitting**: Dynamic imports pour pages lourdes
+- **Prefetching**: Links vers pages fréquentes
+- **Caching**: React Query stale time configuré
+- **Bundle size**: < 300KB initial JS
+
+### Métriques cibles
+- LCP: < 2.5s
+- FID: < 100ms
+- CLS: < 0.1
+- TTI: < 3.5s
+
+---
+
+## 10. Gestion d'erreurs
+
+### Error Boundaries
+```typescript
+<ErrorBoundary
+  fallback={<ErrorPage />}
+  onError={(error, errorInfo) => logToSentry(error, errorInfo)}
+>
+  <App />
+</ErrorBoundary>
+```
+
+### Toast notifications
+```typescript
+// Succès
+toast.success("Mémoire généré avec succès!")
+
+// Erreur
+toast.error("Échec de l'upload du fichier")
+
+// Info
+toast.info("Génération en cours...")
+
+// Warning
+toast.warning("Certaines sections nécessitent validation")
+```
+
+---
+
+## 11. Loading States
+
+### Skeletons
+- Dashboard: Grille de cartes skeleton
+- Éditeur: Blocks de contenu skeleton
+- Sidebar: Liste skeleton
+
+### Spinners
+- Actions ponctuelles (boutons)
+- Génération de sections
+
+### Progress bars
+- Upload de fichiers
+- Indexation de mémoires
+- Génération complète
+
+---
+
+## 12. Animations & Transitions
+
+### Framer Motion
+```typescript
+// Fade in pour les pages
+const pageVariants = {
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -20 }
+}
+
+// Stagger pour les listes
+const listVariants = {
+  animate: {
+    transition: {
+      staggerChildren: 0.1
+    }
+  }
+}
+```
+
+### Transitions
+- Page transitions: 200ms
+- Hover states: 150ms
+- Modal open/close: 300ms
+
+---
+
+## 13. Thème & Design System
+
+### Palette de couleurs (Bernadet RSE)
+```css
+:root {
+  --primary-green: #78B45A;
+  --primary-blue: #2E5090;
+  --accent-orange: #FF7043;
+  --neutral-gray: #F5F5F5;
+  --text-dark: #333333;
+  --text-light: #666666;
+}
+```
+
+### Typographie
+- **Headings**: Montserrat (600)
+- **Body**: Open Sans (400, 600)
+- **Code**: Fira Code
+
+### Espacements
+- Base: 4px (0.25rem)
+- Scale: 4, 8, 12, 16, 24, 32, 48, 64, 96
+
+---
+
+## 14. Internationalisation (Future)
+
+### Structure
+```typescript
+// messages/fr.json
+{
+  "dashboard": {
+    "title": "Tableau de bord",
+    "create_project": "Créer un projet"
+  },
+  "projects": {
+    "status": {
+      "draft": "Brouillon",
+      "generating": "En cours",
+      "ready": "Prêt",
+      "final": "Finalisé"
+    }
+  }
+}
+```
+
+### Utilisation
+```typescript
+import { useTranslation } from 'next-i18next'
+
+const { t } = useTranslation('common')
+t('dashboard.title')
+```
+
+---
+
+## 15. Tests
+
+### Stratégie
+- **Unit**: Composants purs (Vitest + Testing Library)
+- **Integration**: Flows utilisateur (Playwright)
+- **E2E**: Scénarios critiques (Playwright)
+
+### Scénarios prioritaires
+1. Création d'un projet complet
+2. Génération d'un mémoire
+3. Régénération d'une section
+4. Export d'un mémoire final
+
+### Couverture cible
+- Components: > 80%
+- Hooks: > 90%
+- Utils: > 95%
+
+---
+
+## 16. Déploiement
+
+### Environnements
+- **Dev**: Vercel preview (branches)
+- **Staging**: staging.bernadet-memoires.com
+- **Prod**: app.bernadet-memoires.com
+
+### CI/CD (GitHub Actions)
+```yaml
+1. Lint & Type check
+2. Tests (unit + integration)
+3. Build
+4. Deploy to Vercel
+5. Run E2E tests
+6. Notify (Slack)
+```
+
+---
+
+## 17. Monitoring
+
+### Outils
+- **Errors**: Sentry
+- **Analytics**: PostHog ou Plausible
+- **Performance**: Vercel Analytics
+- **Logs**: Logtail
+
+### Métriques clés
+- Taux de succès de génération
+- Temps moyen de génération
+- Taux d'utilisation des fonctionnalités
+- Taux de régénération par section
+
+---
